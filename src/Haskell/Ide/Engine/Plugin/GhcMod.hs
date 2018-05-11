@@ -15,7 +15,9 @@ import           Data.Function
 import           Data.IORef
 import           Data.List
 import qualified Data.Map.Strict                   as Map
+#if __GLASGOW_HASKELL__ < 804
 import           Data.Monoid
+#endif
 import qualified Data.Set                          as Set
 import qualified Data.Text                         as T
 import           DynFlags
@@ -83,7 +85,7 @@ logDiag rfm eref dref df _reason sev spn style msg = do
     Right (Location uri range) -> do
       let update = Map.insertWith Set.union uri l
             where l = Set.singleton diag
-          diag = Diagnostic range (Just $ lspSev sev) Nothing (Just "ghcmod") msgTxt
+          diag = Diagnostic range (Just $ lspSev sev) Nothing (Just "ghcmod") msgTxt Nothing
       modifyIORef' dref update
     Left _ -> do
       modifyIORef' eref (msgTxt:)
@@ -111,7 +113,7 @@ srcErrToDiag df rfm se = do
         eloc <- srcSpan2Loc rfm $ errMsgSpan err
         case eloc of
           Right (Location uri range) ->
-            return $ Right (uri, Diagnostic range sev Nothing (Just "ghcmod") msgTxt)
+            return $ Right (uri, Diagnostic range sev Nothing (Just "ghcmod") msgTxt Nothing)
           Left _ -> return $ Left msgTxt
       processMsgs [] = return (Map.empty,[])
       processMsgs (x:xs) = do
@@ -151,6 +153,8 @@ myLogger rfm action = do
 setTypecheckedModule :: Uri -> IdeGhcM (IdeResponse (Diagnostics, AdditionalErrs))
 setTypecheckedModule uri =
   pluginGetFile "setTypecheckedModule: " uri $ \fp -> do
+    fileMap <- GM.getMMappedFiles
+    debugm $ "setTypecheckedModule: file mapping state is: " ++ show fileMap
     rfm <- GM.mkRevRedirMapFunc
     ((diags', errs), mtm) <- GM.getTypecheckedModuleGhc' (myLogger rfm) fp
     let diags = Map.insertWith Set.union uri Set.empty diags'

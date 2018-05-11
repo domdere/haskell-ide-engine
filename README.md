@@ -70,7 +70,19 @@ we talk to clients.__
 
    ![Renaming](https://i.imgur.com/z03G2a5.gif)
  
-## Installation 
+## Installation
+
+Note: The version on branch `hie-0.1.0.0` supports GHC from 8.0.2 to
+8.2.2, and projects with a `cabal-version` value in the cabal file <2.
+
+Because GHC 8.4.2 ships with Cabal 2.2, and it is now strict about
+what features are available per version, the ghc-mod hack for the
+`libexec-dir` no longer works.  So for current master having GHC
+8.4.2 support, the `cabal-version` field of the project that `hie` is
+being used on must be set to `>= 2.0`.
+
+
+### Getting the source for GHC 8.2.1, 8.2.2, 8.4.2
 
 Both methods build HIE from the source code, so first,
 
@@ -78,22 +90,47 @@ Both methods build HIE from the source code, so first,
 $ git clone https://github.com/haskell/haskell-ide-engine --recursive
 $ cd haskell-ide-engine
 ```
+### Getting the source for GHC 8.0.2, 8.2.1, 8.2.2
+
+Both methods build HIE from the source code, so first,
+
+```bash
+$ git clone https://github.com/haskell/haskell-ide-engine
+$ cd haskell-ide-engine
+$ git checkout hie-0.1.0.0
+$ git submodule update --init
+```
 
 ### Installation with stack
 
 To install HIE, you need Stack version >= 1.6.1
 
 To install all supported GHC versions, and name them as expected
-by the vscode plugin, do
+by the vscode plugin, and also build a local hoogle database, do
 
 ```bash
-make
+make build-all
 ```
 
 Otherwise, do one of the following.
 
+#### For GHC 8.4.2
+
+Using master
+
+```bash
+stack install
+```
 
 #### For GHC 8.2.2
+
+Using master
+
+```bash
+stack --stack-yaml=stack-8.2.2.yaml install
+```
+
+Using branch `hie-0.1.0.0`
 
 ```bash
 stack install
@@ -105,7 +142,7 @@ stack install
 stack --stack-yaml=stack-8.2.1.yaml install
 ```
 
-#### For GHC 8.0.2
+#### For GHC 8.0.2 (only via branch `hie-0.1.0.0`)
 
 ```bash
 stack --stack-yaml=stack-8.0.2.yaml install
@@ -132,7 +169,7 @@ An [haskell-ide-engine-git](https://aur.archlinux.org/packages/haskell-ide-engin
 Using [Aura](https://github.com/aurapm/aura):
 
 ```
-$ aura -A haskell-ide-engine-git
+# aura -A haskell-ide-engine-git
 ```
 
 ## Editor Integration
@@ -203,7 +240,7 @@ For asynchronous auto-completion, follow the setup instructions on
 Make sure HIE is installed, then install the two Atom packages [atom-ide-ui](https://atom.io/packages/atom-ide-ui) and [ide-haskell-hie](https://atom.io/packages/ide-haskell-hie),
 
 ```bash
-$ apm install atom-ide-ui ide-haskell-hie
+$ apm install language-haskell atom-ide-ui ide-haskell-hie
 ```
 
 ### Using HIE with Emacs

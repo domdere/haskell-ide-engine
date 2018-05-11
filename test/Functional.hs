@@ -35,7 +35,7 @@ import           Haskell.Ide.Engine.MonadTypes
 import           Haskell.Ide.Engine.PluginDescriptor
 import           Haskell.Ide.Engine.PluginUtils
 import           Haskell.Ide.Engine.Types
-import           Language.Haskell.LSP.TH.DataTypesJSON hiding (error, name)
+import           Language.Haskell.LSP.Types hiding (error, name)
 import           System.Directory
 import           System.FilePath
 import           TestUtils
@@ -51,6 +51,7 @@ import           Haskell.Ide.Engine.Plugin.Example2
 import           Haskell.Ide.Engine.Plugin.GhcMod
 import           Haskell.Ide.Engine.Plugin.HaRe
 
+{-# ANN module ("HLint: ignore Redundant do"       :: String) #-}
 -- ---------------------------------------------------------------------
 
 plugins :: IdePlugins
@@ -86,7 +87,6 @@ main :: IO ()
 main = do
   setupStackFiles
   withFileLogging "./test-functional.log" $ cdAndDo "./test/testdata"  $ hspec spec
--- main = withFileLogging "./test-functional.log" $ cdAndDo "/home/alanz/tmp/haskell-hie-test-project"  $ hspec spec
 
 spec :: Spec
 spec = do
@@ -115,22 +115,23 @@ functionalSpec = do
 
       -- -------------------------------
 
-      let req1 = filePathToUri "./FuncTest.hs"
+      let req1 = filePathToUri $ cwd </> "FuncTest.hs"
       r1 <- dispatchRequest cin "applyrefact" "lint" req1
       fmap fromDynJSON r1 `shouldBe` IdeResponseOk
                            ( Just
                            $ PublishDiagnosticsParams
-                              { _uri = filePathToUri "./FuncTest.hs"
+                              { _uri = filePathToUri $ cwd </> "FuncTest.hs"
                               , _diagnostics = List
                                 [ Diagnostic (Range (Position 9 6) (Position 10 18))
                                              (Just DsInfo)
-                                             Nothing
+                                             (Just "Redundant do")
                                              (Just "hlint")
                                              "Redundant do\nFound:\n  do putStrLn \"hello\"\nWhy not:\n  putStrLn \"hello\"\n"
+                                             Nothing
                                 ]
                               })
 
-      let req3 = HP (filePathToUri "./FuncTest.hs") (toPos (8,1))
+      let req3 = HP (filePathToUri $ cwd </> "FuncTest.hs") (toPos (8,1))
       r3 <- dispatchRequest cin "hare" "demote" req3
       fmap fromDynJSON r3 `shouldBe`
         (IdeResponseOk

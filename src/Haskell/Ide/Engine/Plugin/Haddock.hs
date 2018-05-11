@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP                 #-}
 {-# LANGUAGE NamedFieldPuns      #-}
 {-# LANGUAGE OverloadedStrings   #-}
 {-# LANGUAGE RankNTypes          #-}
@@ -8,7 +9,9 @@ module Haskell.Ide.Engine.Plugin.Haddock where
 import           Control.Monad.State
 import           Data.Foldable
 import qualified Data.Map                                     as Map
+#if __GLASGOW_HASKELL__ < 804
 import           Data.Monoid
+#endif
 import qualified Data.Text                                    as T
 import           Data.IORef
 import           System.Directory
@@ -18,6 +21,7 @@ import           GhcMonad
 import qualified GhcMod.Monad                                 as GM
 import qualified GhcMod.LightGhc                              as GM
 import           Haskell.Ide.Engine.MonadTypes
+import           Haskell.Ide.Engine.MonadFunctions
 import           HscTypes
 import           Name
 import           Packages
@@ -104,7 +108,9 @@ getDocsForName df name = do
     Just f -> do
       ehi <- readInterfaceFile nameCacheFromIdeM f
       case ehi of
-        Left _ -> return Nothing
+        Left message -> do
+          debugm $ "Haddock docs couldn't be loaded as readInterfaceFile failed with: " ++ message
+          return Nothing
         Right hi -> do
           let res = do -- @Maybe
                 mdl <- nameModule_maybe name
@@ -186,6 +192,9 @@ renderMarkDown =
              ["```\n"])
          , markupHeader = \h ->
              T.replicate (headerLevel h) "#" <> " " <> headerTitle h <> "\n"
+#if __GLASGOW_HASKELL__ >= 804
+         , markupTable = mempty
+#endif
          }
     where surround c x = c <> T.replace c "" x <> c
           removeInner x = T.replace "```" "" $ T.replace "```haskell" "" x

@@ -1,4 +1,3 @@
-{-# LANGUAGE CPP                   #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE GADTs                 #-}
 {-# LANGUAGE RankNTypes            #-}
@@ -42,6 +41,7 @@ import qualified Data.Text as T
 import           Data.Text.Encoding
 import qualified Data.Vector as V
 import qualified GhcModCore               as GM
+import qualified GhcMod.Monad.Types       as GM
 import           Haskell.Ide.Engine.PluginDescriptor
 import           Haskell.Ide.Engine.MonadFunctions
 import           Haskell.Ide.Engine.MonadTypes
@@ -55,12 +55,13 @@ import qualified Haskell.Ide.Engine.Plugin.Brittany    as Brittany
 import qualified Haskell.Ide.Engine.Plugin.Hoogle      as Hoogle
 import qualified Haskell.Ide.Engine.Plugin.Haddock     as Haddock
 import qualified Haskell.Ide.Engine.Plugin.HieExtras   as Hie
+import           Haskell.Ide.Engine.Plugin.Base
 import qualified Language.Haskell.LSP.Control          as CTRL
 import qualified Language.Haskell.LSP.Core             as Core
 import qualified Language.Haskell.LSP.VFS              as VFS
 import           Language.Haskell.LSP.Diagnostics
 import           Language.Haskell.LSP.Messages
-import qualified Language.Haskell.LSP.TH.DataTypesJSON as J
+import qualified Language.Haskell.LSP.Types            as J
 import qualified Language.Haskell.LSP.Utility          as U
 import           System.Exit
 import qualified System.Log.Logger as L
@@ -224,7 +225,10 @@ mapFileFromVfs verTVar cin vtdi = do
       let text' = Yi.toString yitext
           -- text = "{-# LINE 1 \"" ++ fp ++ "\"#-}\n" <> text'
       let req = GReq (Just uri) Nothing Nothing (const $ return ())
-                  $ IdeResponseOk <$> GM.loadMappedFileSource fp text'
+                  $ IdeResponseOk <$> do
+                      GM.loadMappedFileSource fp text'
+                      fileMap <- GM.getMMappedFiles
+                      debugm $ "file mapping state is: " ++ show fileMap
       liftIO $ atomically $ do
         modifyTVar' verTVar (Map.insert uri ver)
         writeTChan cin req
@@ -379,6 +383,9 @@ reactor (DispatcherEnv cancelReqTVar wipTVar versionTVar) cin inp = do
         rid <- nextLspReqId
         reactorSend $ fmServerRegisterCapabilityRequest rid registrations
 
+        reactorSend $
+                fmServerLogMessageNotification J.MtLog $ "Using ghc version: " <> T.pack version
+
         lf <- ask
         let hreq = GReq Nothing Nothing Nothing callback $ do
                      Hoogle.initializeHoogleDb
@@ -440,9 +447,8 @@ reactor (DispatcherEnv cancelReqTVar wipTVar versionTVar) cin inp = do
             uri = notification ^. J.params . J.textDocument . J.uri
         -- unmapFileFromVfs versionTVar cin uri
         makeRequest $ GReq (Just uri) Nothing Nothing (const $ return ()) $ do
-          case uriToFilePath uri of
-            Just fp -> deleteCachedModule fp
-            Nothing -> return ()
+          forM_ (uriToFilePath uri)
+            deleteCachedModule
           return $ IdeResponseOk ()
 
       -- -------------------------------
@@ -538,25 +544,41 @@ reactor (DispatcherEnv cancelReqTVar wipTVar versionTVar) cin inp = do
 
       Core.ReqCodeAction req -> do
         liftIO $ U.logs $ "reactor:got CodeActionRequest:" ++ show req
+
         let params = req ^. J.params
             doc = params ^. J.textDocument . J.uri
-            (J.List diags) = params ^. J.context . J.diagnostics
+            (J.List allDiags) = params ^. J.context . J.diagnostics
 
-        let
-          makeCommand (J.Diagnostic (J.Range start _) _s _c (Just "hlint") m  ) = [J.Command title cmd cmdparams]
-            where
-              title :: T.Text
-              title = "Apply hint:" <> head (T.lines m)
-              -- NOTE: the cmd needs to be registered via the InitializeResponse message. See hieOptions above
-              cmd = "applyrefact:applyOne"
-              -- need 'file' and 'start_pos'
-              args = J.Array $ V.singleton $ J.toJSON $ ApplyRefact.AOP doc start
-              cmdparams = Just args
-          makeCommand (J.Diagnostic _r _s _c _source _m  ) = []
-          -- TODO: make context specific commands for all sorts of things, such as refactorings
-        let body = J.List $ concatMap makeCommand diags
-        let rspMsg = Core.makeResponseMessage req body
-        reactorSend rspMsg
+            sendCodeActions :: [Diagnostic] -> R ()
+            sendCodeActions diags = do
+                -- TODO: make context specific commands for all sorts of things, such as refactorings
+              let body = J.List $ concatMap makeCommand diags
+              let rspMsg = Core.makeResponseMessage req body
+              reactorSend rspMsg
+
+            makeCommand :: Diagnostic -> [J.Command]
+            makeCommand (J.Diagnostic (J.Range start _) _s (Just code) (Just "hlint") m _) = [J.Command title cmd cmdparams]
+              where
+                title :: T.Text
+                title = "Apply hint:" <> head (T.lines m)
+                -- NOTE: the cmd needs to be registered via the InitializeResponse message. See hieOptions above
+                cmd = "applyrefact:applyOne"
+                -- need 'file', 'start_pos' and hint title (to distinguish between alternative suggestions at the same location)
+                args = J.Array $ V.singleton $ J.toJSON $ ApplyRefact.AOP doc start code
+                cmdparams = Just args
+            makeCommand (J.Diagnostic _r _s _c _source _m _) = []
+
+            callback :: IdeResponse [Diagnostic] -> R ()
+            callback (IdeResponseOk refactorableDiags) = sendCodeActions refactorableDiags
+            callback _ = sendCodeActions allDiags
+
+        lf <- ask
+        diagsOn <- configVal True hlintOn
+        if diagsOn
+          -- if hlint is enabled then try to filter out unrefactorable diagnostics
+          then makeRequest $ GReq (Just doc) Nothing Nothing (flip runReaderT lf . callback)
+                           $ ApplyRefact.filterUnrefactorableDiagnostics doc allDiags
+          else sendCodeActions allDiags
 
       -- -------------------------------
 
@@ -591,7 +613,7 @@ reactor (DispatcherEnv cancelReqTVar wipTVar versionTVar) cin inp = do
       Core.ReqCompletion req -> do
         liftIO $ U.logs $ "reactor:got CompletionRequest:" ++ show req
         let params = req ^. J.params
-            doc = params ^. J.textDocument ^. J.uri
+            doc = params ^. (J.textDocument . J.uri)
             pos = params ^. J.position
 
         mprefix <- getPrefixAtPos doc pos
@@ -632,7 +654,7 @@ reactor (DispatcherEnv cancelReqTVar wipTVar versionTVar) cin inp = do
       Core.ReqDocumentHighlights req -> do
         liftIO $ U.logs $ "reactor:got DocumentHighlightsRequest:" ++ show req
         let params = req ^. J.params
-            doc = params ^. J.textDocument ^. J.uri
+            doc = params ^. (J.textDocument . J.uri)
             pos = params ^. J.position
         callback <- hieResponseHelper (req ^. J.id) $ \highlights -> do
           let rspMsg = Core.makeResponseMessage req $ J.List highlights
@@ -658,7 +680,7 @@ reactor (DispatcherEnv cancelReqTVar wipTVar versionTVar) cin inp = do
         liftIO $ U.logs $ "reactor:got FindReferences:" ++ show req
         -- TODO: implement project-wide references
         let params = req ^. J.params
-            doc = params ^. J.textDocument ^. J.uri
+            doc = params ^. (J.textDocument . J.uri)
             pos = params ^. J.position
         callback <- hieResponseHelper (req ^. J.id) $ \highlights -> do
           let rspMsg = Core.makeResponseMessage req $ J.List highlights
@@ -754,7 +776,7 @@ getDocsForName :: T.Text -> Maybe T.Text -> T.Text -> IdeM (Maybe T.Text)
 getDocsForName name pkg modName' = do
   let modName = docRules pkg modName'
       query = name
-           <> fromMaybe "" (T.append " package:" <$> pkg)
+           <> maybe "" (T.append " package:") pkg
            <> " module:" <> modName
            <> " is:exact"
   debugm $ "hoogle query: " ++ T.unpack query
@@ -781,7 +803,7 @@ requestDiagnostics cin file ver = do
     sendOne pid (fileUri,ds) = do
       publishDiagnostics maxToSend fileUri Nothing (Map.fromList [(Just pid,SL.toSortedList ds)])
     hasSeverity :: J.DiagnosticSeverity -> J.Diagnostic -> Bool
-    hasSeverity sev (J.Diagnostic _ (Just s) _ _ _) = s == sev
+    hasSeverity sev (J.Diagnostic _ (Just s) _ _ _ _) = s == sev
     hasSeverity _ _ = False
     sendEmpty = publishDiagnostics maxToSend file Nothing (Map.fromList [(Just "ghcmod",SL.toSortedList [])])
     maxToSend = maybe 50 maxNumberOfProblems mc

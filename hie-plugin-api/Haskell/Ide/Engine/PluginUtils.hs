@@ -33,8 +33,9 @@ import           Data.Monoid
 import qualified Data.Text                             as T
 import           FastString
 import           Haskell.Ide.Engine.MonadTypes
+import           Haskell.Ide.Engine.MonadFunctions
 import           Haskell.Ide.Engine.ArtifactMap
-import qualified Language.Haskell.LSP.TH.DataTypesJSON as J
+import qualified Language.Haskell.LSP.Types            as J
 import           Prelude                               hiding (log)
 import           SrcLoc
 import           System.Directory
@@ -74,8 +75,14 @@ srcSpan2Range spn =
   realSrcSpan2Range <$> getRealSrcSpan spn
 
 reverseMapFile :: MonadIO m => (FilePath -> FilePath) -> FilePath -> m FilePath
-reverseMapFile rfm fp =
-  liftIO $ canonicalizePath . rfm =<< canonicalizePath fp
+reverseMapFile rfm fp = do
+  fp' <- liftIO $ canonicalizePath fp
+  debugm $ "reverseMapFile: mapped file is " ++ fp'
+  let orig = rfm fp'
+  debugm $ "reverseMapFile: original is " ++ orig
+  orig' <- liftIO $ canonicalizePath orig
+  debugm $ "reverseMapFile: Canonicalized original is " ++ orig
+  return orig'
 
 srcSpan2Loc :: (MonadIO m) => (FilePath -> FilePath) -> SrcSpan -> m (Either T.Text Location)
 srcSpan2Loc revMapp spn = runExceptT $ do
@@ -85,7 +92,9 @@ srcSpan2Loc revMapp spn = runExceptT $ do
     foo (Right v) = pure v
   rspan <- foo $ getRealSrcSpan spn
   let fp = unpackFS $ srcSpanFile rspan
+  debugm $ "srcSpan2Loc: mapped file is " ++ fp
   file <- reverseMapFile revMapp fp
+  debugm $ "srcSpan2Loc: Original file is " ++ file
   return $ Location (filePathToUri file) (realSrcSpan2Range rspan)
 
 -- ---------------------------------------------------------------------
